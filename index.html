@@ -338,30 +338,48 @@
             }
         }
 
-        // Fetch Current JNJ Price (Simple & Fast - Always Delayed)
+        // Fetch Current JNJ Price (Improved Multi-Proxy & Auto-Refresh)
         async function fetchCurrentPrice() {
             const symbol = 'JNJ';
-            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1d&interval=1d`;
+            // ใช้ timestamp ป้องกันระบบจำค่าเก่า (Cache)
+            const timestamp = new Date().getTime();
+            const yahooUrl1 = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?range=1d&interval=1m&_=${timestamp}`;
+            const yahooUrl2 = `https://query2.finance.yahoo.com/v8/finance/chart/${symbol}?range=1d&interval=1m&_=${timestamp}`;
             
             const proxies = [
-                `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-                `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+                `https://corsproxy.io/?${encodeURIComponent(yahooUrl1)}`,
+                `https://corsproxy.io/?${encodeURIComponent(yahooUrl2)}`,
+                `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl1)}`,
+                `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(yahooUrl2)}`
             ];
 
             let latestPrice = null;
+            let prevClose = null;
 
             for (let i = 0; i < proxies.length; i++) {
                 try {
                     const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 3000); 
+                    const timeoutId = setTimeout(() => controller.abort(), 5000); // ขยายเวลาเป็น 5 วินาที
                     
-                    const response = await fetch(proxies[i], { signal: controller.signal });
+                    const response = await fetch(proxies[i], { 
+                        signal: controller.signal,
+                        cache: 'no-store'
+                    });
                     clearTimeout(timeoutId);
                     
                     if (response.ok) {
-                        const data = await response.json();
-                        latestPrice = data.chart.result[0].meta.regularMarketPrice;
-                        break; 
+                        let data = await response.json();
+                        // กรณีใช้ allorigins แบบ /get ข้อมูลจะอยู่ใน data.contents
+                        if (data.contents) {
+                            data = JSON.parse(data.contents);
+                        }
+                        
+                        const meta = data?.chart?.result?.[0]?.meta;
+                        if (meta && meta.regularMarketPrice) {
+                            latestPrice = meta.regularMarketPrice;
+                            prevClose = meta.chartPreviousClose || meta.previousClose;
+                            break; 
+                        }
                     }
                 } catch (error) {
                     console.warn(`Proxy ${i+1} failed, trying next...`);
@@ -371,16 +389,27 @@
             const displayEl = document.getElementById('current-price-display');
 
             if (latestPrice !== null) {
+                let changeHtml = `<span class="text-xs text-green-600 font-semibold flex items-center gap-1"><span class="live-dot w-1.5 h-1.5"></span>Live</span>`;
+                
+                if (prevClose) {
+                    const diff = latestPrice - prevClose;
+                    const pct = (diff / prevClose) * 100;
+                    const colorClass = diff >= 0 ? 'text-green-600' : 'text-jnj-red';
+                    const sign = diff >= 0 ? '+' : '';
+                    changeHtml = `<span class="text-xs ${colorClass} font-bold">${sign}${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%)</span>`;
+                }
+
                 displayEl.innerHTML = `
-                    <span class="mr-1">$${latestPrice.toFixed(2)}</span>
+                    <span class="mr-1.5">$${latestPrice.toFixed(2)}</span>
                     <div class="flex flex-col items-start justify-center leading-none">
                         <span class="text-[10px] font-normal text-gray-500 mb-0.5">USD</span>
-                        <span class="text-xs text-gray-400 font-semibold">(Delayed)</span>
+                        ${changeHtml}
                     </div>
                 `;
             } else {
+                // อัปเดตค่า Fallback ให้ตรงกับระดับราคาปัจจุบัน (~$259.01) กรณีอินเทอร์เน็ตหรือทุก Proxy ล่มพร้อมกัน
                 displayEl.innerHTML = `
-                    <span class="mr-1">$271.22</span>
+                    <span class="mr-1.5">$259.01</span>
                     <div class="flex flex-col items-start justify-center leading-none">
                         <span class="text-[10px] font-normal text-gray-500 mb-0.5">USD</span>
                         <span class="text-xs text-gray-400 font-semibold">(Delayed)</span>
@@ -553,6 +582,7 @@
             initAdvancedChart();
             setLanguage(currentLanguage); 
             setInterval(fetchExchangeRate, 60000);
+            setInterval(fetchCurrentPrice, 60000);
         };
     </script>
 </body>
